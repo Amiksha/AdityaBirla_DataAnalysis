@@ -3,60 +3,65 @@ import streamlit as st
 
 st.title("📊 Weekly Performance Dashboard")
 
-# ================== FILE UPLOAD ==================
-uploaded_file = st.file_uploader("📂 Upload Excel File", type=["xlsx", "xls"])
+# ------------------ FILE UPLOAD ------------------
+uploaded_file = st.file_uploader("📂 Upload Excel File", type=["xlsx","xls"])
 
 if uploaded_file:
-    df = pd.read_excel(uploaded_file)
 
-    # ----- Date Handling -----
+    # Read xls/xlsx correctly
+    ext = uploaded_file.name.split('.')[-1].lower()
+    if ext == "xls":
+        df = pd.read_excel(uploaded_file, engine="xlrd")
+    else:
+        df = pd.read_excel(uploaded_file, engine="openpyxl")
+
+    # ------------------ CLEAN DATES ------------------
+    # Convert invalid submission dates (0000-00-00) to NaT
+    df["Submitted date"] = df["Submitted date"].replace("0000-00-00 00:00:00", pd.NaT)
     df["Submitted date"] = pd.to_datetime(df["Submitted date"], errors="coerce")
     df["Start date"] = pd.to_datetime(df["Start date"], errors="coerce")
 
-    # ----- Flags -----
-    df["completed_flag"] = df["Submitted"].str.upper().eq("YES")
-    df["completed_within_week"] = df["completed_flag"] & (
-        (df["Submitted date"] - df["Start date"]).dt.days <= 7
-    )
+    # Completion status flag
+    df["completion_status"] = df["Submitted"].apply(lambda x: "Completed" if str(x).upper()=="YES" else "Not Completed")
 
-    # ----- Weekly Buckets -----
-    df['week_start'] = df['Submitted date'] - pd.to_timedelta(df['Submitted date'].dt.weekday, unit='D')
-    df['week_end'] = df['week_start'] + pd.Timedelta(days=6)
-
-    # ================== DATE SELECTOR ==================
-    start_date = st.date_input("📅 Select Start Date",
-                               min_value=df["Submitted date"].min().date(),
-                               max_value=df["Submitted date"].max().date())
-    
+    # ------------------ WEEK INPUT ------------------
+    start_date = st.date_input("📅 Select Week Start Date")
     end_date = start_date + pd.Timedelta(days=6)
-    st.success(f"📆 Reporting Window: {start_date} → {end_date}")
 
-    # ================== Manager Filter Dropdown ==================
-    manager_list = ["ALL Managers"] + sorted(df["L1 name"].dropna().unique().tolist())
-    selected_manager = st.selectbox("👤 Select Manager (optional)", manager_list)
+    st.success(f"📆 Week Selected: **{start_date} → {end_date}**")
 
-    # ================== FILTER DATA ==================
-    filtered = df[(df["Submitted date"].dt.date >= start_date) &
-                  (df["Submitted date"].dt.date <= end_date)]
+    # ------------------ MANAGER FILTER ------------------
+    manager_option = ["All Managers"] + sorted(df["L1 name"].dropna().unique().tolist())
+    selected_manager = st.selectbox("👤 Filter by Manager (Optional)", manager_option)
 
-    if selected_manager != "ALL Managers":
-        filtered = filtered[filtered["L1 name"] == selected_manager]
+    # ------------------ WEEK FILTER CORE LOGIC ------------------
+    weekly_data = df[
+           # Completed users (within week)
+           ((df["Submitted date"].dt.date >= start_date) & (df["Submitted date"].dt.date <= end_date))
+        |
+           # Not completed but assigned within the same week
+           ((df["Submitted date"].isna()) & (df["Start date"].dt.date.between(start_date, end_date)))
+    ]
 
-    if filtered.empty:
-        st.warning("⚠ No records found for this time window.")
+    # Manager selection filter
+    if selected_manager != "All Managers":
+        weekly_data = weekly_data[weekly_data["L1 name"] == selected_manager]
+
+    if weekly_data.empty:
+        st.warning("⚠ No records available for this week/manager selection.")
         st.stop()
 
-    # ================== AGENT WEEKLY SUMMARY ==================
-    summary = filtered.groupby(["L1 name","User name"]).agg(
-        modules_assigned=("Assessment id","nunique"),
-        completed=("completed_flag","sum"),
-        completed_within_week=("completed_within_week","sum"),
-        avg_score=("Overall score","mean"),
-        attempts=("No of attempts","sum")
+    # ------------------ SUMMARY OUTPUT ------------------
+    summary = weekly_data.groupby(["L1 name","User name"]).agg(
+        modules_assigned  = ("Assessment id","nunique"),
+        completed         = ("completion_status", lambda x: (x=="Completed").sum()),
+        not_completed     = ("completion_status", lambda x: (x=="Not Completed").sum()),
+        avg_score         = ("Overall score","mean"),
+        attempts          = ("No of attempts","sum")
     ).reset_index()
 
-    st.subheader("📍 Weekly Summary (Agent-wise)")
+    st.subheader("📌 Weekly Summary (Completed + Pending Users)")
     st.dataframe(summary, use_container_width=True)
 
 else:
-    st.info("⬆ Upload Excel file to begin analysis.")
+    st.info("⬆ Upload Excel to generate weekly performance insights.")
